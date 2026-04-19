@@ -1,4 +1,4 @@
-"""Google Calendar — OAuth2 + อ่านกิจกรรม (readonly)"""
+"""Google Calendar — OAuth2 + อ่านกิจกรรม (readonly). โหลดไลบรารี Google แบบ lazy เพื่อไม่ให้แอปพังเมื่อยังไม่ติดตั้งแพ็กเกจ."""
 from __future__ import annotations
 
 import json
@@ -6,11 +6,6 @@ import os
 from datetime import date, datetime, time
 from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
-
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 DEFAULT_TZ = "Asia/Bangkok"
@@ -58,7 +53,9 @@ def _client_config() -> dict:
     return {"web": web}
 
 
-def build_flow(redirect_uri: str) -> Flow:
+def build_flow(redirect_uri: str):
+    from google_auth_oauthlib.flow import Flow
+
     return Flow.from_client_config(
         _client_config(),
         scopes=SCOPES,
@@ -83,18 +80,23 @@ def exchange_code(code: str, redirect_uri: str) -> str:
     return creds.to_json()
 
 
-def credentials_from_token_json(token_json: str) -> Optional[Credentials]:
+def credentials_from_token_json(token_json: str):
     if not token_json:
         return None
     try:
+        from google.oauth2.credentials import Credentials
+
         data = json.loads(token_json)
         return Credentials.from_authorized_user_info(data, SCOPES)
     except Exception:
         return None
 
 
-def fetch_events_for_date(creds: Credentials, day: date, tz_name: str = DEFAULT_TZ) -> List[dict[str, Any]]:
+def fetch_events_for_date(creds, day: date, tz_name: str = DEFAULT_TZ) -> List[dict[str, Any]]:
     """คืนรายการ dict ที่มี summary, start_iso, end_iso, html_link"""
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+
     tz = ZoneInfo(tz_name)
     start_dt = datetime.combine(day, time.min, tzinfo=tz)
     end_dt = datetime.combine(day, time.max, tzinfo=tz)

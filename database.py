@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from dotenv import load_dotenv
 from supabase import create_client
@@ -7,9 +8,11 @@ load_dotenv()
 
 
 class DBManager:
-    def __init__(self):
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_KEY")
+    def __init__(self, url: Optional[str] = None, key: Optional[str] = None):
+        url = (url or os.getenv("SUPABASE_URL") or "").strip()
+        key = (key or os.getenv("SUPABASE_KEY") or "").strip()
+        if not url or not key:
+            raise ValueError("ต้องมี SUPABASE_URL และ SUPABASE_KEY")
         self.client = create_client(url, key)
 
     def insert_task(self, data):

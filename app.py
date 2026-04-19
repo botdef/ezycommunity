@@ -31,6 +31,36 @@ st.set_page_config(
 )
 
 
+def apply_streamlit_secrets_to_env() -> None:
+    """Streamlit Cloud ใส่ค่าใน Secrets (st.secrets) — คัดลอกไป os.environ ให้ load_db / database อ่านได้เหมือน .env"""
+    try:
+        sec = st.secrets
+    except (RuntimeError, FileNotFoundError, AttributeError, TypeError):
+        return
+    for key in (
+        "SUPABASE_URL",
+        "SUPABASE_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_MODEL",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REDIRECT_URI",
+        "ENABLE_GOOGLE_CALENDAR",
+    ):
+        try:
+            val = sec[key]
+        except KeyError:
+            continue
+        if val is None or str(val).strip() == "":
+            continue
+        if not os.environ.get(key):
+            os.environ[key] = str(val).strip()
+
+
+apply_streamlit_secrets_to_env()
+
+
 @dataclass
 class Task:
     title: str
@@ -119,15 +149,81 @@ st.markdown(
 )
 
 
+def resolve_supabase_credentials() -> tuple[str, str, str]:
+    """คืน (url, key, แหล่งที่มา) — ถ้าใส่คู่ครบในเซสชัน (พิมพ์เอง) จะใช้คู่นั้นก่อน .env/Secrets"""
+    apply_streamlit_secrets_to_env()
+    env_u = os.getenv("SUPABASE_URL", "").strip()
+    env_k = os.getenv("SUPABASE_KEY", "").strip()
+    man_u = (st.session_state.get("_manual_supabase_url") or "").strip()
+    man_k = (st.session_state.get("_manual_supabase_key") or "").strip()
+    if man_u and man_k:
+        return man_u, man_k, "session"
+    if env_u and env_k:
+        return env_u, env_k, "env"
+    return "", "", "none"
+
+
 def load_db() -> Optional[DBManager]:
-    supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
+    supabase_url, supabase_key, _src = resolve_supabase_credentials()
     if not supabase_url or not supabase_key:
+        st.session_state.pop("_db_connect_error", None)
         return None
     try:
-        return DBManager()
-    except Exception:
+        mgr = DBManager(supabase_url, supabase_key)
+        st.session_state.pop("_db_connect_error", None)
+        return mgr
+    except Exception as e:
+        st.session_state["_db_connect_error"] = str(e)
         return None
+
+
+def _supabase_manual_form() -> None:
+    st.caption(
+        "ใส่ครั้งแล้วกดบันทึก — เก็บเฉพาะใน **เซสชันนี้** (รีเฟรช/ปิดแท็บต้องใส่ใหม่) · ใช้บน Cloud ได้โดยไม่ต้องมี .env"
+    )
+    u = st.text_input(
+        "Project URL",
+        value=st.session_state.get("_manual_supabase_url") or "",
+        placeholder="https://xxxx.supabase.co",
+        key="_form_supabase_url",
+    )
+    existing_key = (st.session_state.get("_manual_supabase_key") or "").strip()
+    k = st.text_input(
+        "API Key (anon หรือ service role)",
+        type="password",
+        placeholder="วางคีย์ใหม่ (เว้นว่าง = ใช้คีย์เดิมที่บันทึกไว้ในเซสชัน)" if existing_key else "eyJ...",
+        key="_form_supabase_key",
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("บันทึกและเชื่อม", type="primary", use_container_width=True):
+            nu = (u or "").strip()
+            nk = (k or "").strip() or existing_key
+            if not nu or not nk:
+                st.error("ต้องใส่ URL และคีย์ให้ครบ")
+            else:
+                st.session_state["_manual_supabase_url"] = nu
+                st.session_state["_manual_supabase_key"] = nk
+                st.session_state.pop("_db_connect_error", None)
+                st.success("บันทึกแล้ว — กำลังโหลดใหม่")
+                st.rerun()
+    with c2:
+        if st.button("ล้างค่าที่พิมพ์เอง", use_container_width=True):
+            st.session_state.pop("_manual_supabase_url", None)
+            st.session_state.pop("_manual_supabase_key", None)
+            st.session_state.pop("_db_connect_error", None)
+            st.rerun()
+
+
+_supabase_dialog_decorator = getattr(st, "dialog", None)
+if _supabase_dialog_decorator is not None:
+
+    @_supabase_dialog_decorator("เชื่อม Supabase")
+    def open_supabase_manual_modal() -> None:
+        _supabase_manual_form()
+
+else:
+    open_supabase_manual_modal = None  # type: ignore[misc, assignment]
 
 
 def persist_task(db: Optional[DBManager], task: dict):
@@ -151,37 +247,55 @@ def delete_task(db: Optional[DBManager], task_id):
 def fetch_tasks(db: Optional[DBManager]):
     if db is None:
         return [task.__dict__ for task in TASKS_SEED]
+    st.session_state.pop("_fetch_tasks_error", None)
     try:
         result = db.fetch_tasks()
-        if getattr(result, "data", None):
-            return result.data
+        if getattr(result, "data", None) is not None:
+            return list(result.data)
+        return []
+    except Exception as e:
+        st.session_state["_fetch_tasks_error"] = str(e)
+        return []
+
+
+def refresh_tasks_session(db: Optional[DBManager]) -> None:
+    """ดึงงานจาก Supabase มาใส่ session — ใช้หลังเพิ่ม/ลบ/แก้ที่ต้องการให้ตรงกับ DB"""
+    if db is None:
+        return
+    try:
+        result = db.fetch_tasks()
+        if getattr(result, "data", None) is not None:
+            st.session_state["tasks_data"] = [dict(row) for row in result.data]
     except Exception:
         pass
-    return [task.__dict__ for task in TASKS_SEED]
 
 
 def fetch_notes(db: Optional[DBManager]):
     if db is None:
         return st.session_state.get("notes_data", [])
+    st.session_state.pop("_fetch_notes_error", None)
     try:
         result = db.fetch_notes()
-        if getattr(result, "data", None):
-            return result.data
-    except Exception:
-        pass
-    return st.session_state.get("notes_data", [])
+        if getattr(result, "data", None) is not None:
+            return list(result.data)
+        return []
+    except Exception as e:
+        st.session_state["_fetch_notes_error"] = str(e)
+        return []
 
 
 def fetch_settings(db: Optional[DBManager]):
     if db is None:
         return st.session_state.get("settings_data", {"name": "", "email": "", "reminder": True, "ai_mode": "ปานกลาง"})
+    st.session_state.pop("_fetch_settings_error", None)
     try:
         result = db.fetch_settings()
-        if getattr(result, "data", None):
+        if getattr(result, "data", None) and len(result.data) > 0:
             return result.data[0]
-    except Exception:
-        pass
-    return st.session_state.get("settings_data", {"name": "", "email": "", "reminder": True, "ai_mode": "ปานกลาง"})
+        return st.session_state.get("settings_data", {"name": "", "email": "", "reminder": True, "ai_mode": "ปานกลาง"})
+    except Exception as e:
+        st.session_state["_fetch_settings_error"] = str(e)
+        return st.session_state.get("settings_data", {"name": "", "email": "", "reminder": True, "ai_mode": "ปานกลาง"})
 
 
 def task_lookup_index(tasks, task):
@@ -464,6 +578,28 @@ def filter_tasks_list(tasks_data: list, q: str, status_filter: str, priority_fil
     return out
 
 
+# แยก «รายละเอียดหลัก» กับ «คำสั่ง/หมายเหตุ» ในช่อง description เดียว (ฐานข้อมูลคอลัมน์เดิม)
+TASK_DESC_EXTRA_MARK = "\n--- คำสั่ง / หมายเหตุ ---\n"
+
+
+def compose_task_description(main: str, extras: str) -> str:
+    m = (main or "").strip()
+    e = (extras or "").strip()
+    if not e:
+        return m
+    if not m:
+        return e
+    return m + TASK_DESC_EXTRA_MARK + e
+
+
+def split_task_description(description: str) -> tuple[str, str]:
+    raw = description or ""
+    if TASK_DESC_EXTRA_MARK in raw:
+        a, b = raw.split(TASK_DESC_EXTRA_MARK, 1)
+        return a.strip(), b.strip()
+    return raw.strip(), ""
+
+
 def filter_done_by_due_range(done: List[dict], start_d: Optional[date], end_d: Optional[date]) -> List[dict]:
     if not start_d and not end_d:
         return done
@@ -485,17 +621,82 @@ def filter_done_by_due_range(done: List[dict], start_d: Optional[date], end_d: O
 
 
 def render_tasks(tasks):
-    st.session_state.setdefault("tasks_data", tasks)
-    tasks_data = st.session_state["tasks_data"]
-    expand_add = st.session_state.pop("show_add_task", False)
-
-    render_header("งาน", "Kanban board — เพิ่ม แก้ไข ลบ และเชื่อม Supabase")
     db = st.session_state.get("db")
+    # เมื่อมี Supabase ให้รายการงานตรงกับ DB ทุกครั้ง (กัน session ค้าง + งานมี id สำหรับลบ/แก้)
+    if db is not None:
+        st.session_state["tasks_data"] = [dict(t) for t in tasks]
+    else:
+        st.session_state.setdefault("tasks_data", list(tasks))
 
-    with st.expander("+ เพิ่มงานใหม่", expanded=expand_add):
+    tasks_data = st.session_state["tasks_data"]
+    st.session_state.pop("show_add_task", None)
+
+    render_header(
+        "งาน",
+        "เพิ่มงานลงฐานข้อมูลจริง · ลบงานต้องยืนยัน · ด้านล่างส่งออก HTML/CSV สำหรับสั่งพิมพ์",
+    )
+
+    cand = st.session_state.get("_delete_task_candidate")
+    if cand:
+        safe = html.escape(str(cand.get("title") or "(ไม่มีชื่อ)"))
+        st.markdown(
+            f"<div style='border:2px solid #fecaca;border-radius:14px;padding:1rem 1.1rem;margin-bottom:1rem;background:#fff7ed;'>"
+            f"<div style='font-weight:700;color:#9a3412;margin-bottom:.35rem;'>ยืนยันการลบงาน</div>"
+            f"<div class='small' style='color:#451a03;'>รายการ: <b>{safe}</b></div>"
+            f"<div class='small muted' style='margin-top:.4rem;'>ลบแล้วกู้คืนจากแอปนี้ไม่ได้ — ตรวจชื่อให้ถูกก่อนกดยืนยัน</div></div>",
+            unsafe_allow_html=True,
+        )
+        mode = "ฐานข้อมูล (Supabase)" if db is not None else "รายการในเซสชัน (ไม่มี DB)"
+        st.caption(f"โหมดลบ: {mode}")
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            if st.button("ยืนยันลบถาวร", type="primary", use_container_width=True, key="task_delete_confirm_yes"):
+                snap = cand.get("task") or {}
+                try:
+                    if db is not None:
+                        tid = cand.get("id")
+                        if tid is None:
+                            st.error("งานนี้ไม่มีรหัสจากฐานข้อมูล — รีเฟรชหน้าแล้วลองใหม่")
+                        else:
+                            delete_task(db, tid)
+                            refresh_tasks_session(db)
+                            st.session_state.pop("_delete_task_candidate", None)
+                            _toast = getattr(st, "toast", None)
+                            if _toast:
+                                _toast("ลบงานแล้ว", icon="🗑️")
+                            else:
+                                st.success("ลบงานแล้ว")
+                            st.rerun()
+                    else:
+                        idx = task_lookup_index(tasks_data, snap)
+                        if idx is not None:
+                            tasks_data.pop(idx)
+                            st.session_state["tasks_data"] = tasks_data
+                            st.session_state.pop("_delete_task_candidate", None)
+                            _toast = getattr(st, "toast", None)
+                            if _toast:
+                                _toast("ลบงานแล้ว", icon="🗑️")
+                            else:
+                                st.success("ลบงานแล้ว")
+                            st.rerun()
+                        else:
+                            st.error("หารายการในรายชื่อไม่เจอ — กดยกเลิกแล้วรีเฟรชหน้า")
+                except Exception as e:
+                    st.error(f"ลบไม่สำเร็จ: {e}")
+        with dc2:
+            if st.button("ยกเลิก", use_container_width=True, key="task_delete_confirm_no"):
+                st.session_state.pop("_delete_task_candidate", None)
+                st.rerun()
+
+    with st.expander("+ เพิ่มงานใหม่ (บันทึกจริงเมื่อเชื่อม Supabase)", expanded=True):
+        st.caption("พิมพ์ชื่องาน (จำเป็น) · รายละเอียด · คำสั่ง/หมายเหตุแยกช่อง — ระบบรวมเป็นคอลัมน์เดียวใน DB")
         with st.form("add_task_form", clear_on_submit=True):
-            title = st.text_input("ชื่องาน")
-            description = st.text_area("รายละเอียด")
+            title = st.text_input("ชื่องาน *", placeholder="เช่น ส่งรายงาน Q1")
+            description = st.text_area("รายละเอียดงาน", placeholder="บริบท ขั้นตอน ลิงก์อ้างอิง…")
+            extra = st.text_area(
+                "คำสั่ง / หมายเหตุเพิ่ม (สำหรับส่งต่อหรือสั่งพิมพ์)",
+                placeholder="เช่น ให้ลูกค้าเซ็นก่อนส่ง · เงื่อนไขพิเศษ…",
+            )
             c1, c2, c3 = st.columns(3)
             with c1:
                 due_date = st.date_input("กำหนดส่ง", value=date.today())
@@ -510,7 +711,7 @@ def render_tasks(tasks):
                 else:
                     new_task = {
                         "title": title.strip(),
-                        "description": description.strip(),
+                        "description": compose_task_description(description, extra),
                         "due_date": due_date.isoformat(),
                         "priority": priority,
                         "status": status,
@@ -519,8 +720,10 @@ def render_tasks(tasks):
                     try:
                         if db is not None:
                             persist_task(db, new_task)
-                        tasks_data.append(new_task)
-                        st.session_state["tasks_data"] = tasks_data
+                            refresh_tasks_session(db)
+                        else:
+                            tasks_data.append(new_task)
+                            st.session_state["tasks_data"] = tasks_data
                         st.success("เพิ่มงานแล้ว")
                         st.rerun()
                     except Exception as e:
@@ -572,32 +775,38 @@ def render_tasks(tasks):
                         label_visibility="collapsed",
                     )
                     if new_status != task.get("status") and task_index is not None:
-                        tasks_data[task_index]["status"] = new_status
                         if db is not None and task.get("id") is not None:
                             update_task(db, task.get("id"), {"status": new_status})
-                        st.session_state["tasks_data"] = tasks_data
+                            refresh_tasks_session(db)
+                        elif task_index is not None:
+                            tasks_data[task_index]["status"] = new_status
+                            st.session_state["tasks_data"] = tasks_data
                         st.rerun()
                 with edit_col:
                     if st.button("แก้ไข", key=f"edit_{task_index}_{idx}", use_container_width=True):
                         st.session_state["editing_task"] = task
                         st.rerun()
                 with delete_col:
-                    if st.button("ลบ", key=f"delete_{task_index}_{idx}", use_container_width=True):
-                        if db is not None and task.get("id") is not None:
-                            delete_task(db, task.get("id"))
-                        if task_index is not None:
-                            tasks_data.pop(task_index)
-                            st.session_state["tasks_data"] = tasks_data
-                        st.success("ลบงานแล้ว")
+                    if st.button("ลบงาน", key=f"delete_{task_index}_{idx}", use_container_width=True):
+                        if db is not None and task.get("id") is None:
+                            st.error("งานนี้ไม่มีรหัสจากฐานข้อมูล — รีเฟรชหน้าแล้วลองใหม่")
+                            st.stop()
+                        st.session_state["_delete_task_candidate"] = {
+                            "id": task.get("id"),
+                            "title": task.get("title", ""),
+                            "task": dict(task),
+                        }
                         st.rerun()
 
     editing_task = st.session_state.get("editing_task")
     if editing_task:
         st.markdown("---")
         st.subheader("แก้ไขงาน")
+        _em, _ex = split_task_description(str(editing_task.get("description") or ""))
         with st.form("edit_task_form"):
             title = st.text_input("ชื่องาน", value=editing_task.get("title", ""))
-            description = st.text_area("รายละเอียด", value=editing_task.get("description", ""))
+            description = st.text_area("รายละเอียดงาน", value=_em)
+            extra = st.text_area("คำสั่ง / หมายเหตุเพิ่ม", value=_ex)
             c1, c2, c3 = st.columns(3)
             with c1:
                 due_date = st.date_input("กำหนดส่ง", value=date.fromisoformat(editing_task.get("due_date", date.today().isoformat())))
@@ -620,7 +829,7 @@ def render_tasks(tasks):
             if save:
                 updated = {
                     "title": title.strip(),
-                    "description": description.strip(),
+                    "description": compose_task_description(description, extra),
                     "due_date": due_date.isoformat(),
                     "priority": priority,
                     "status": status,
@@ -629,10 +838,12 @@ def render_tasks(tasks):
                 idx = task_lookup_index(tasks_data, editing_task)
                 if idx is not None:
                     task_id = tasks_data[idx].get("id")
-                    tasks_data[idx].update(updated)
                     if db is not None and task_id is not None:
                         update_task(db, task_id, updated)
-                    st.session_state["tasks_data"] = tasks_data
+                        refresh_tasks_session(db)
+                    else:
+                        tasks_data[idx].update(updated)
+                        st.session_state["tasks_data"] = tasks_data
                 st.session_state.pop("editing_task", None)
                 st.success("บันทึกการแก้ไขแล้ว")
                 st.rerun()
@@ -641,7 +852,7 @@ def render_tasks(tasks):
                 st.rerun()
 
     st.markdown("---")
-    with st.expander("ส่งออกงานที่เสร็จแล้ว (พิมพ์ / สำรอง)"):
+    with st.expander("ส่งออกงานที่เสร็จแล้ว — สั่งพิมพ์ / สำรอง (HTML + CSV)"):
         done_all = [t for t in tasks_data if t.get("status") == "เสร็จแล้ว"]
         use_range = st.checkbox("กรองตามกำหนดส่ง (ช่วงวันที่)", value=False)
         start_d = end_d = None
@@ -658,6 +869,7 @@ def render_tasks(tasks):
         if not done:
             st.info("ไม่มีงานที่เสร็จแล้วตามเงื่อนไข — ปรับช่วงวันที่หรือรอมีงานที่ปิดแล้ว")
         else:
+            st.caption("ไฟล์ HTML รวมรายละเอียด + คำสั่ง/หมายเหตุในคอลัมน์รายละเอียด — เปิดในเบราว์เซอร์แล้วสั่งพิมพ์ (Ctrl+P) ได้ทันที")
             report_html = build_completed_tasks_report_html(done)
             fname_html = f"รายงานงานเสร็จแล้ว_{date.today().isoformat()}.html"
             st.download_button(
@@ -844,7 +1056,20 @@ def render_calendar(tasks):
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_ai_planner():
+def _ai_result_text() -> str:
+    return (st.session_state.get("ai_result") or "").strip()
+
+
+def _task_title_from_ai_text(text: str, goal: str) -> str:
+    line = text.split("\n", 1)[0].strip()
+    if not line:
+        return f"{goal} (จาก AI)"
+    if len(line) > 120:
+        return line[:117] + "..."
+    return line
+
+
+def render_ai_planner(db: Optional[DBManager]):
     render_header("AI วางแผน", "ใช้ Gemini เมื่อใส่ GEMINI_API_KEY — ไม่มีคีย์จะเป็นตัวอย่างเท่านั้น")
     goal = st.selectbox("เลือกเป้าหมาย", ["สรุปงานของฉัน", "วางแผนสัปดาห์", "แตกเป้าหมายเป็นงาน", "สรุปบันทึกการประชุม"])
     c1, c2 = st.columns([1.1, 0.9])
@@ -890,10 +1115,51 @@ def render_ai_planner():
     c3, c4 = st.columns(2)
     with c3:
         if st.button("เพิ่มลงในงาน", use_container_width=True):
-            st.success("เพิ่มลงในงานแล้ว")
+            raw = _ai_result_text()
+            placeholder = "ยังไม่มีผลลัพธ์ ลองกดสร้างแผนได้เลย"
+            if not raw or raw == placeholder:
+                st.warning("ยังไม่มีผลจาก AI — กดสร้างแผนก่อน แล้วค่อยเพิ่มลงในงาน")
+            else:
+                desc = raw if len(raw) <= 8000 else raw[:8000]
+                new_task = {
+                    "title": _task_title_from_ai_text(raw, goal),
+                    "description": desc,
+                    "due_date": date.today().isoformat(),
+                    "priority": "ปานกลาง",
+                    "status": "ยังไม่ได้เริ่ม",
+                    "tag": "AI",
+                }
+                try:
+                    if db is not None:
+                        persist_task(db, new_task)
+                        refresh_tasks_session(db)
+                    else:
+                        st.session_state.setdefault("tasks_data", [t.__dict__ for t in TASKS_SEED])
+                        st.session_state["tasks_data"].append(new_task)
+                    st.success("เพิ่มลงในงานแล้ว")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"บันทึกงานไม่สำเร็จ: {e}")
     with c4:
         if st.button("บันทึกสรุป", use_container_width=True):
-            st.success("บันทึกสรุปแล้ว")
+            raw = _ai_result_text()
+            placeholder = "ยังไม่มีผลลัพธ์ ลองกดสร้างแผนได้เลย"
+            if not raw or raw == placeholder:
+                st.warning("ยังไม่มีผลจาก AI — กดสร้างแผนก่อน แล้วค่อยบันทึกสรุป")
+            else:
+                preview = raw if len(raw) <= 12000 else raw[:12000]
+                title = f"สรุป AI: {goal}"[:200]
+                new_note = {"title": title, "preview": preview, "created_at": date.today().isoformat()}
+                try:
+                    if db is not None:
+                        db.insert_note(new_note)
+                    else:
+                        st.session_state.setdefault("notes_data", [])
+                        st.session_state["notes_data"].append(new_note)
+                    st.success("บันทึกสรุปในบันทึกแล้ว — เปิดเมนูบันทึกเพื่อดู")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"บันทึกโน้ตไม่สำเร็จ: {e}")
 
 
 def render_notes(db):
@@ -1000,15 +1266,52 @@ def render_settings(db):
 
 def main():
     st.sidebar.markdown("<div class='sidebar-brand'>EzyCommunity</div><div class='muted small'>งาน · นัดประชุม · ปฏิทิน · AI</div>", unsafe_allow_html=True)
+    st.sidebar.caption(
+        "โฟกัสใช้งานตอนนี้: แดชบอร์ด · งาน · เร่งด่วน · นัดประชุม — "
+        "ปฏิทิน / AI / บันทึก / ตั้งค่า ยังไม่จำเป็นตอนนี้ เปิดไว้ใช้เมื่อพร้อมได้"
+    )
     page = st.sidebar.radio("เมนู", NAV_ITEMS, index=0, label_visibility="collapsed")
+
+    if open_supabase_manual_modal is not None:
+        if st.sidebar.button("🔑 เชื่อม Supabase (พิมพ์เอง)", use_container_width=True):
+            open_supabase_manual_modal()
+    else:
+        with st.sidebar.expander("🔑 เชื่อม Supabase (พิมพ์เอง)", expanded=False):
+            _supabase_manual_form()
 
     db = load_db()
     tasks = fetch_tasks(db)
 
-    if db is None:
-        st.sidebar.info("โหมดพรีวิว UI: ยังไม่ได้เชื่อม Supabase")
+    try:
+        secrets_has_supabase = "SUPABASE_URL" in st.secrets and "SUPABASE_KEY" in st.secrets
+    except Exception:
+        secrets_has_supabase = False
+
+    err_db = st.session_state.get("_db_connect_error")
+    err_tasks = st.session_state.get("_fetch_tasks_error")
+    err_notes = st.session_state.get("_fetch_notes_error")
+    err_set = st.session_state.get("_fetch_settings_error")
+
+    _u, _k, cred_src = resolve_supabase_credentials()
+
+    if err_db:
+        st.sidebar.error(f"เชื่อม Supabase ไม่สำเร็จ: {err_db}")
+        st.sidebar.caption("ตรวจ URL/คีย์ที่พิมพ์ หรือ SUPABASE_URL / SUPABASE_KEY ใน Secrets / .env")
+    elif db is None:
+        if secrets_has_supabase:
+            st.sidebar.warning("มี Secrets แต่ยังสร้าง client ไม่ได้ — ตรวจชื่อตัวแปรว่าเป็น SUPABASE_URL และ SUPABASE_KEY (flat ใน TOML)")
+        else:
+            st.sidebar.info("โหมดพรีวิว UI: ยังไม่ได้เชื่อม Supabase — ใส่ Secrets / .env หรือกดปุ่มพิมพ์ URL คีย์ด้านบน")
     else:
         st.sidebar.success("เชื่อม Supabase แล้ว")
+        if cred_src == "session":
+            st.sidebar.caption("ใช้ค่าที่พิมพ์ในเซสชันนี้ (รีเฟรชหน้าจะหาย — ใช้ Secrets ถ้าต้องการถาวรบน Cloud)")
+        if err_tasks:
+            st.sidebar.warning(f"ดึงงานไม่สำเร็จ: {err_tasks}")
+        if err_notes:
+            st.sidebar.warning(f"ดึงบันทึกไม่สำเร็จ: {err_notes}")
+        if err_set:
+            st.sidebar.warning(f"ดึงการตั้งค่าไม่สำเร็จ: {err_set}")
 
     st.session_state["db"] = db
 
@@ -1023,7 +1326,7 @@ def main():
     elif page == "ปฏิทิน":
         render_calendar(tasks)
     elif page == "AI วางแผน":
-        render_ai_planner()
+        render_ai_planner(db)
     elif page == "บันทึก":
         render_notes(db)
     elif page == "ตั้งค่า":
