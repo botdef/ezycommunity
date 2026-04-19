@@ -1,3 +1,6 @@
+import csv
+import html
+import io
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -5,8 +8,18 @@ from typing import List, Optional
 
 import streamlit as st
 from dotenv import load_dotenv
+from google.auth.transport.requests import Request
 
 from database import DBManager
+from google_calendar import (
+    calendar_feature_enabled,
+    calendar_oauth_configured,
+    credentials_from_token_json,
+    exchange_code,
+    fetch_events_for_date,
+    get_authorization_url,
+    get_redirect_uri,
+)
 
 load_dotenv()
 
@@ -366,6 +379,111 @@ def group_tasks(tasks):
     return groups
 
 
+def build_completed_tasks_report_html(tasks: List[dict]) -> str:
+    """HTML สำหรับเปิดในเบราว์เซอร์แล้วพิมพ์ (Ctrl+P) — escape ข้อมูลผู้ใช้แล้ว"""
+    rows = []
+    for t in sorted(tasks, key=lambda x: str(x.get("due_date") or ""), reverse=True):
+        title = html.escape(str(t.get("title", "")))
+        desc = html.escape(str(t.get("description", "")))
+        due = html.escape(str(t.get("due_date", "-")))
+        pri = html.escape(str(t.get("priority", "-")))
+        tag = html.escape(str(t.get("tag", "-")))
+        rows.append(
+            f"<tr><td>{title}</td><td>{due}</td><td>{pri}</td><td>{tag}</td><td class='desc'>{desc}</td></tr>"
+        )
+    rows_html = "\n".join(rows) if rows else "<tr><td colspan='5'>ไม่มีข้อมูล</td></tr>"
+    generated = date.today().isoformat()
+    n = len(tasks)
+    return f"""<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>รายงานงานที่เสร็จแล้ว — EzyCommunity</title>
+<style>
+  body {{ font-family: "Sarabun", "Leelawadee UI", "Segoe UI", sans-serif; margin: 24px; color: #0f172a; }}
+  h1 {{ font-size: 1.35rem; margin-bottom: 4px; }}
+  .meta {{ color: #64748b; font-size: 0.9rem; margin-bottom: 20px; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
+  th, td {{ border: 1px solid #e2e8f0; padding: 8px 10px; text-align: left; vertical-align: top; }}
+  th {{ background: #f1f5f9; -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+  td.desc {{ white-space: pre-wrap; word-break: break-word; }}
+  @media print {{
+    body {{ margin: 12mm; }}
+    @page {{ size: A4; margin: 15mm; }}
+  }}
+</style>
+</head>
+<body>
+  <h1>สรุปงานที่เสร็จแล้ว</h1>
+  <p class="meta">EzyCommunity · สร้างเมื่อ {generated} · จำนวน {n} รายการ</p>
+  <table>
+    <thead>
+      <tr><th>ชื่องาน</th><th>กำหนดส่ง</th><th>ความสำคัญ</th><th>แท็ก</th><th>รายละเอียด</th></tr>
+    </thead>
+    <tbody>
+      {rows_html}
+    </tbody>
+  </table>
+</body>
+</html>"""
+
+
+def build_completed_tasks_csv(tasks: List[dict]) -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ชื่องาน", "กำหนดส่ง", "ความสำคัญ", "แท็ก", "รายละเอียด"])
+    for t in sorted(tasks, key=lambda x: str(x.get("due_date") or ""), reverse=True):
+        w.writerow(
+            [
+                t.get("title", ""),
+                t.get("due_date", ""),
+                t.get("priority", ""),
+                t.get("tag", ""),
+                t.get("description", ""),
+            ]
+        )
+    return buf.getvalue()
+
+
+def filter_tasks_list(tasks_data: list, q: str, status_filter: str, priority_filter: str) -> list:
+    out = list(tasks_data)
+    q = (q or "").strip().lower()
+    if q:
+        out = [
+            t
+            for t in out
+            if q in str(t.get("title", "")).lower()
+            or q in str(t.get("description", "")).lower()
+            or q in str(t.get("tag", "")).lower()
+        ]
+    if status_filter and status_filter != "ทั้งหมด":
+        out = [t for t in out if str(t.get("status", "")) == status_filter]
+    if priority_filter and priority_filter != "ทั้งหมด":
+        out = [t for t in out if str(t.get("priority", "")) == priority_filter]
+    return out
+
+
+def filter_done_by_due_range(done: List[dict], start_d: Optional[date], end_d: Optional[date]) -> List[dict]:
+    if not start_d and not end_d:
+        return done
+    out = []
+    for t in done:
+        raw = t.get("due_date")
+        if not raw:
+            continue
+        try:
+            td = date.fromisoformat(str(raw)[:10])
+        except Exception:
+            continue
+        if start_d and td < start_d:
+            continue
+        if end_d and td > end_d:
+            continue
+        out.append(t)
+    return out
+
+
 def render_tasks(tasks):
     st.session_state.setdefault("tasks_data", tasks)
     tasks_data = st.session_state["tasks_data"]
@@ -408,7 +526,21 @@ def render_tasks(tasks):
                     except Exception as e:
                         st.error(f"เพิ่มงานไม่สำเร็จ: {e}")
 
-    groups = group_tasks(tasks_data)
+    fq1, fq2, fq3 = st.columns([1.2, 0.9, 0.9])
+    with fq1:
+        q = st.text_input("ค้นหา", placeholder="ชื่องาน รายละเอียด แท็ก", key="task_search_q")
+    with fq2:
+        sf = st.selectbox("กรองสถานะ", ["ทั้งหมด"] + STATUS_FLOW, key="task_filter_status")
+    with fq3:
+        pf = st.selectbox(
+            "กรองความสำคัญ",
+            ["ทั้งหมด", "ต่ำ", "ปานกลาง", "สูง", "เร่งด่วน"],
+            key="task_filter_pri",
+        )
+    filtered_tasks = filter_tasks_list(tasks_data, q, sf, pf)
+    st.caption(f"แสดง {len(filtered_tasks)} จาก {len(tasks_data)} งาน (กรองแล้ว)")
+
+    groups = group_tasks(filtered_tasks)
     cols = st.columns(2)
     for i, status in enumerate(STATUS_FLOW):
         with cols[i % 2]:
@@ -508,6 +640,42 @@ def render_tasks(tasks):
                 st.session_state.pop("editing_task", None)
                 st.rerun()
 
+    st.markdown("---")
+    with st.expander("ส่งออกงานที่เสร็จแล้ว (พิมพ์ / สำรอง)"):
+        done_all = [t for t in tasks_data if t.get("status") == "เสร็จแล้ว"]
+        use_range = st.checkbox("กรองตามกำหนดส่ง (ช่วงวันที่)", value=False)
+        start_d = end_d = None
+        if use_range:
+            cda, cdb = st.columns(2)
+            with cda:
+                start_d = st.date_input("ตั้งแต่", value=date.today().replace(day=1), key="export_start")
+            with cdb:
+                end_d = st.date_input("ถึง", value=date.today(), key="export_end")
+        done = filter_done_by_due_range(done_all, start_d, end_d) if use_range else done_all
+        st.caption(
+            f"งาน «เสร็จแล้ว» ที่ตรงเงื่อนไข: **{len(done)}** รายการ (ทั้งหมด {len(done_all)} รายการ)"
+        )
+        if not done:
+            st.info("ไม่มีงานที่เสร็จแล้วตามเงื่อนไข — ปรับช่วงวันที่หรือรอมีงานที่ปิดแล้ว")
+        else:
+            report_html = build_completed_tasks_report_html(done)
+            fname_html = f"รายงานงานเสร็จแล้ว_{date.today().isoformat()}.html"
+            st.download_button(
+                "ดาวน์โหลด HTML (เปิดแล้วกด Ctrl+P เพื่อพิมพ์)",
+                data=report_html.encode("utf-8"),
+                file_name=fname_html,
+                mime="text/html; charset=utf-8",
+                use_container_width=True,
+            )
+            csv_data = build_completed_tasks_csv(done)
+            st.download_button(
+                "ดาวน์โหลด CSV (เปิดใน Excel / สำรองข้อมูล)",
+                data=("\ufeff" + csv_data).encode("utf-8"),
+                file_name=f"งานเสร็จแล้ว_{date.today().isoformat()}.csv",
+                mime="text/csv; charset=utf-8",
+                use_container_width=True,
+            )
+
 
 def render_urgent(tasks):
     render_header("เร่งด่วน", "เฉพาะงานที่ตั้งความสำคัญเป็นเร่งด่วน และยังไม่เสร็จ")
@@ -539,33 +707,131 @@ def render_meetings(tasks):
 
 
 def render_calendar(tasks):
-    render_header("ปฏิทิน", "ดูงานตามเวลาและวางแผนสัปดาห์ของคุณ")
+    render_header("ปฏิทิน", "งานในระบบตามวันที่ — Google Calendar เชื่อมได้ภายหลัง (อ่านอย่างเดียว)")
+    redirect_uri = get_redirect_uri()
+    qp = st.query_params
+
+    def _qp_first(key: str):
+        v = qp.get(key)
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)):
+            return v[0] if v else None
+        return v
+
+    if calendar_feature_enabled():
+        if _qp_first("error"):
+            st.warning(f"Google แจ้ง: {_qp_first('error')} — ลองเชื่อมใหม่ได้จากปุ่มด้านล่าง")
+        if (
+            calendar_oauth_configured()
+            and redirect_uri
+            and _qp_first("code")
+            and _qp_first("state")
+        ):
+            code = _qp_first("code")
+            state = _qp_first("state")
+            if state != st.session_state.get("gcal_oauth_state"):
+                st.error("รหัส state ไม่ตรง — กดเชื่อม Google Calendar ใหม่อีกครั้ง")
+            else:
+                try:
+                    token_json = exchange_code(code, redirect_uri)
+                    st.session_state["google_calendar_token"] = token_json
+                    for k in ("gcal_auth_url", "gcal_oauth_state"):
+                        st.session_state.pop(k, None)
+                    try:
+                        st.query_params.clear()
+                    except Exception:
+                        for k2 in ("code", "state", "scope"):
+                            if k2 in st.query_params:
+                                del st.query_params[k2]
+                    st.success("เชื่อม Google Calendar แล้ว")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"แลกรหัส OAuth ไม่สำเร็จ: {e}")
+    else:
+        st.info(
+            "การเชื่อม **Google Calendar** ปิดไว้เป็นค่าเริ่มต้น — เมื่อพร้อมให้ตั้ง "
+            "`ENABLE_GOOGLE_CALENDAR=true` และค่า OAuth ตาม **README**"
+        )
+
     selected_day = st.date_input("เลือกวันที่", value=date.today())
+
+    gcal_token = st.session_state.get("google_calendar_token")
+    gcal_creds = credentials_from_token_json(gcal_token) if gcal_token else None
+
     left, right = st.columns([1.4, 0.8])
     with left:
         st.markdown(
+            "<div class='card'><div class='card-title'>Google Calendar</div>",
+            unsafe_allow_html=True,
+        )
+        if not calendar_feature_enabled():
+            st.caption("เปิดใช้เมื่อพร้อมเชื่อม — ดูวิธีใน README")
+        elif not calendar_oauth_configured():
+            st.info(
+                "ตั้งค่า `GOOGLE_CLIENT_ID` และ `GOOGLE_CLIENT_SECRET` ใน `.env` หรือ Secrets บน Streamlit "
+                "แล้วเปิด Calendar API ใน Google Cloud Console"
+            )
+        elif not redirect_uri:
+            st.warning(
+                "ตั้งค่า `GOOGLE_REDIRECT_URI` ให้ตรงกับ URL ของแอป (เช่น `http://localhost:8501/` หรือ `https://xxx.streamlit.app/`)"
+            )
+        else:
+            conn = st.columns([1, 1])
+            with conn[0]:
+                if st.button("เชื่อม Google Calendar", use_container_width=True):
+                    url, oauth_state = get_authorization_url(redirect_uri)
+                    st.session_state["gcal_oauth_state"] = oauth_state
+                    st.session_state["gcal_auth_url"] = url
+            with conn[1]:
+                if st.session_state.get("gcal_auth_url"):
+                    st.link_button(
+                        "เปิดหน้าอนุญาต Google",
+                        st.session_state["gcal_auth_url"],
+                        type="primary",
+                        use_container_width=True,
+                    )
+            if st.session_state.get("google_calendar_token"):
+                if st.button("ตัดการเชื่อม Google Calendar", use_container_width=True):
+                    st.session_state.pop("google_calendar_token", None)
+                    st.session_state.pop("gcal_auth_url", None)
+                    st.session_state.pop("gcal_oauth_state", None)
+                    st.rerun()
+
+        if calendar_feature_enabled() and gcal_creds:
+            if getattr(gcal_creds, "expired", False) and getattr(gcal_creds, "refresh_token", None):
+                try:
+                    gcal_creds.refresh(Request())
+                    st.session_state["google_calendar_token"] = gcal_creds.to_json()
+                except Exception:
+                    st.warning("โทเคน Google หมดอายุ — กดตัดการเชื่อมแล้วล็อกอินใหม่")
+            events = fetch_events_for_date(gcal_creds, selected_day)
+            if events:
+                for ev in events:
+                    line = f"**{ev['summary']}**  \n<small>{ev['start_iso'][:16]} → {ev['end_iso'][:16]}</small>"
+                    if ev.get("html_link"):
+                        st.markdown(f"{line}  \n[เปิดใน Google Calendar]({ev['html_link']})", unsafe_allow_html=True)
+                    else:
+                        st.markdown(line, unsafe_allow_html=True)
+            else:
+                st.caption("ไม่มีกิจกรรมในวันนี้ (หรือดึงไม่ได้)")
+        elif calendar_feature_enabled() and calendar_oauth_configured() and redirect_uri:
+            st.caption("ยังไม่ได้เชื่อม — กดปุ่มด้านบนแล้วล็อกอิน Google")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown(
             """
-            <div class='card'>
-              <div style='display:flex; justify-content:space-between; align-items:center;'>
-                <div class='card-title'>ปฏิทิน (ตัวอย่าง UI)</div>
-                <div class='muted'>เชื่อม Google Calendar ได้ในภายหลัง</div>
-              </div>
-              <div style='margin-top:1rem; display:grid; grid-template-columns: repeat(7, 1fr); gap:.6rem;'>
-                <div class='task-row' style='min-height:84px;'><b>จ</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>อ</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>พ</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>พฤ</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>ศ</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>ส</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>อา</b><div class='small muted'>-</div></div>
-              </div>
+            <div class='card' style='margin-top:1rem;'>
+              <div class='card-title'>สัปดาห์นี้ (ภาพรวม)</div>
+              <div class='muted small' style='margin-top:.4rem;'>รายละเอียดตามวันที่เลือกด้านขวา · เชื่อม Google ได้ภายหลัง</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
     with right:
         todays_tasks = [t for t in tasks if t.get("due_date") == selected_day.isoformat()]
-        st.markdown("<div class='card'><div class='card-title'>วันที่เลือก</div>", unsafe_allow_html=True)
+        st.markdown("<div class='card'><div class='card-title'>งานในระบบ (วันที่เลือก)</div>", unsafe_allow_html=True)
         st.write(selected_day.strftime("%d %b %Y"))
         if todays_tasks:
             for t in todays_tasks:
@@ -579,13 +845,36 @@ def render_calendar(tasks):
 
 
 def render_ai_planner():
-    render_header("AI วางแผน", "ใช้ AI เฉพาะเวลาที่ต้องการสรุปหรือช่วยจัดแผน")
+    render_header("AI วางแผน", "ใช้ Gemini เมื่อใส่ GEMINI_API_KEY — ไม่มีคีย์จะเป็นตัวอย่างเท่านั้น")
     goal = st.selectbox("เลือกเป้าหมาย", ["สรุปงานของฉัน", "วางแผนสัปดาห์", "แตกเป้าหมายเป็นงาน", "สรุปบันทึกการประชุม"])
     c1, c2 = st.columns([1.1, 0.9])
     with c1:
-        st.text_area("ข้อความตั้งต้น", placeholder="อธิบายเป้าหมาย บันทึกการประชุม หรือสิ่งที่อยากให้ช่วยวางแผน...", height=180)
+        prompt_text = st.text_area(
+            "ข้อความตั้งต้น",
+            placeholder="อธิบายเป้าหมาย บันทึกการประชุม หรือสิ่งที่อยากให้ช่วยวางแผน...",
+            height=180,
+        )
+        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            st.caption("ยังไม่มี `GEMINI_API_KEY` / `GOOGLE_API_KEY` — ใส่ใน `.env` หรือ Streamlit Secrets")
         if st.button("สร้างแผน", use_container_width=True):
-            st.session_state["ai_result"] = f"ผลลัพธ์ตัวอย่างสำหรับ: {goal}"
+            user_prompt = (prompt_text or "").strip()
+            if api_key:
+                try:
+                    import google.generativeai as genai
+
+                    genai.configure(api_key=api_key)
+                    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+                    model = genai.GenerativeModel(model_name)
+                    full = f"บทบาท: ผู้ช่วยวางแผนงานภาษาไทย\nเป้าหมาย: {goal}\n\nข้อความผู้ใช้:\n{user_prompt or '(ว่าง)'}"
+                    resp = model.generate_content(full)
+                    st.session_state["ai_result"] = getattr(resp, "text", None) or str(resp)
+                except Exception as e:
+                    st.session_state["ai_result"] = f"เรียก Gemini ไม่สำเร็จ: {e}"
+            else:
+                st.session_state["ai_result"] = (
+                    f"[ตัวอย่าง — ใส่ API Key แล้วลองใหม่]\nเป้าหมาย: {goal}\nข้อความ: {user_prompt or '(ว่าง)'}"
+                )
     with c2:
         result = st.session_state.get("ai_result", "ยังไม่มีผลลัพธ์ ลองกดสร้างแผนได้เลย")
         st.markdown(
@@ -628,19 +917,42 @@ def render_notes(db):
             else:
                 st.error("กรุณาใส่หัวข้อบันทึก")
     notes = fetch_notes(db)
-    for note in notes:
-        st.markdown(
-            f"""
-            <div class='task-row'>
-              <div style='font-weight:700;'>{note.get('title', '')}</div>
-              <div class='small muted' style='margin-top:.25rem;'>{note.get('preview', '')}</div>
-              <div style='margin-top:.55rem; display:flex; gap:.5rem; flex-wrap:wrap;'>
-                <span class='pill'>เปิดดู</span><span class='pill'>สรุปด้วย AI</span><span class='pill'>แปลงเป็นงาน</span>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    for i, note in enumerate(notes):
+        row1, row2 = st.columns([4, 1])
+        with row1:
+            st.markdown(
+                f"""
+                <div class='task-row'>
+                  <div style='font-weight:700;'>{note.get('title', '')}</div>
+                  <div class='small muted' style='margin-top:.25rem;'>{note.get('preview', '')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with row2:
+            if st.button("ลบ", key=f"note_del_{note.get('id', i)}", use_container_width=True):
+                if db is not None and note.get("id") is not None:
+                    try:
+                        db.delete_note(note["id"])
+                    except Exception as e:
+                        st.error(f"ลบไม่สำเร็จ: {e}")
+                        st.stop()
+                else:
+                    st.session_state["notes_data"] = [
+                        n
+                        for n in st.session_state.get("notes_data", [])
+                        if (
+                            n.get("title"),
+                            n.get("created_at"),
+                            n.get("preview"),
+                        )
+                        != (
+                            note.get("title"),
+                            note.get("created_at"),
+                            note.get("preview"),
+                        )
+                    ]
+                st.rerun()
 
 
 def render_settings(db):
@@ -675,7 +987,11 @@ def render_settings(db):
                     st.stop()
             st.session_state["settings_data"] = {"name": name, "email": email, "reminder": reminder, "ai_mode": ai_mode}
             st.success("บันทึกการตั้งค่าแล้ว")
-    st.markdown("<div class='card'><div class='card-title'>เชื่อมปฏิทิน</div><div class='small muted' style='margin-top:.5rem;'>เชื่อม Google Calendar ในภายหลังเพื่อซิงก์งาน</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='card'><div class='card-title'>เชื่อมปฏิทิน</div><div class='small muted' style='margin-top:.5rem;'>"
+        "ตั้ง <code>ENABLE_GOOGLE_CALENDAR=true</code> และ OAuth ตาม README เมื่อพร้อมเชื่อม Google Calendar</div></div>",
+        unsafe_allow_html=True,
+    )
     st.write("")
     st.markdown("<div class='card'><div class='card-title'>การแจ้งเตือน</div><div class='small muted' style='margin-top:.5rem;'>สรุปรายวัน การเตือน และแจ้งเตือนก่อนถึงกำหนด</div></div>", unsafe_allow_html=True)
     st.write("")

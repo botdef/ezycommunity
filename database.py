@@ -27,6 +27,9 @@ class DBManager:
     def insert_note(self, data):
         return self.client.table("notes").insert(data).execute()
 
+    def delete_note(self, note_id):
+        return self.client.table("notes").delete().eq("id", note_id).execute()
+
     def fetch_notes(self):
         return self.client.table("notes").select("*").order("created_at", desc=True).execute()
 
