@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional
 
 import streamlit as st
@@ -28,17 +28,18 @@ class Task:
     tag: str
 
 
-MOCK_TASKS: List[Task] = [
+TASKS_SEED: List[Task] = [
     Task("เตรียมรายงานประจำสัปดาห์", "สรุปความคืบหน้าและความเสี่ยงที่อาจเกิดขึ้น", "2026-04-19", "สูง", "เกินกำหนด", "งาน"),
     Task("จดบันทึกการประชุมทีม", "รวบรวมมติและรายการงานที่ต้องดำเนินการ", "2026-04-19", "ปานกลาง", "กำลังทำ", "งานแอดมิน"),
     Task("ตรวจสอบการเชื่อมปฏิทิน", "เช็กว่างานถูกผูกกับปฏิทินหรือยัง", "2026-04-20", "ต่ำ", "เสร็จแล้ว", "ระบบ"),
-    Task("วางแผนประชาสัมพันธ์ชุมชน", "ร่างไทม์ไลน์กิจกรรมสำหรับสัปดาห์หน้า", "2026-04-21", "เร่งด่วน", "ต้องทำ", "ชุมชน"),
-    Task("เตรียมข้อเสนอโปรเจกต์", "ร่าง outline และนำเสนอให้ทีมตรวจทาน", "2026-04-22", "สูง", "ต้องทำ", "Planning"),
+    Task("วางแผนประชาสัมพันธ์ชุมชน", "ร่างไทม์ไลน์กิจกรรมสำหรับสัปดาห์หน้า", "2026-04-21", "เร่งด่วน", "ยังไม่ได้เริ่ม", "ชุมชน"),
+    Task("เตรียมข้อเสนอโปรเจกต์", "ร่าง outline และนำเสนอให้ทีมตรวจทาน", "2026-04-22", "สูง", "ยังไม่ได้เริ่ม", "Planning"),
+    Task("ประชุมทีมออนไลน์", "สรุป OKR รายไตรมาส", "2026-04-22", "ปานกลาง", "ยังไม่ได้เริ่ม", "งาน"),
     Task("รอข้อมูลจากลูกค้า", "รอไฟล์และคำตอบจากฝั่งลูกค้า", "2026-04-23", "ต่ำ", "รออยู่", "Waiting"),
 ]
 
-NAV_ITEMS = ["แดชบอร์ด", "งาน", "ปฏิทิน", "AI วางแผน", "บันทึก", "ตั้งค่า"]
-STATUS_FLOW = ["ยังไม่ได้เริ่ม", "กำลังทำ", "รออยู่", "เกินกำหนด", "เสร็จแล้ว"]
+NAV_ITEMS = ["แดชบอร์ด", "งาน", "เร่งด่วน", "นัดประชุม", "ปฏิทิน", "AI วางแผน", "บันทึก", "ตั้งค่า"]
+STATUS_FLOW = ["ยังไม่ได้เริ่ม", "กำลังทำ", "รออยู่", "เกินกำหนด", "เสร็จแล้ว", "เร่งด่วน"]
 
 
 st.markdown(
@@ -70,28 +71,12 @@ st.markdown(
       }
       .sidebar-brand { font-size: 1.2rem; font-weight: 800; color: #0f172a; }
       .small { font-size: .84rem; }
-      .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.65rem;
-        border-radius: 999px;
-        font-size: 0.78rem;
-        font-weight: 700;
-      }
-      .status-todo { background: #e2e8f0; color: #0f172a; }
-      .status-progress { background: #dbeafe; color: #1d4ed8; }
-      .status-waiting { background: #fef3c7; color: #b45309; }
-      .status-overdue { background: #fee2e2; color: #b91c1c; }
-      .status-done { background: #dcfce7; color: #166534; }
       .kanban-col {
         background: #f8fafc;
         border: 1px solid #e5e7eb;
         border-radius: 22px;
         padding: 1rem;
-        min-height: 240px;
-      }
-      .kanban-header {
-        display:flex; justify-content:space-between; align-items:center; gap:1rem;
-        margin-bottom: .9rem;
+        min-height: 220px;
       }
       .kanban-title { font-size: .95rem; font-weight: 700; color: #0f172a; }
       .kanban-count {
@@ -106,7 +91,6 @@ st.markdown(
         box-shadow: 0 6px 18px rgba(15,23,42,.05);
         margin-bottom: .75rem;
       }
-      .kanban-card:hover { border-color: #bfdbfe; box-shadow: 0 10px 24px rgba(37,99,235,.08); }
       div[data-baseweb="select"] > div {
         border-radius: 14px;
         border-color: #dbeafe;
@@ -115,20 +99,6 @@ st.markdown(
       div[data-baseweb="select"] span {
         color: #1d4ed8;
         font-weight: 600;
-      }
-      div[data-testid="stSelectbox"] { margin-top: .5rem; }
-      .section-tab {
-        display: inline-flex; align-items: center; gap: .5rem;
-        padding: .65rem 1rem; border-radius: 999px; border: 1px solid #dbeafe;
-        background: #eff6ff; color: #1d4ed8; font-weight: 700; font-size: .86rem;
-      }
-      .section-tab.active {
-        background: #2563eb; color: white; border-color: #2563eb;
-        box-shadow: 0 10px 20px rgba(37,99,235,.18);
-      }
-      .action-chip {
-        display:inline-flex; align-items:center; gap:.4rem; padding:.45rem .75rem; border-radius:999px;
-        border:1px solid #dbeafe; background:#eff6ff; color:#1d4ed8; font-size:.8rem; font-weight:700;
       }
     </style>
     """,
@@ -147,16 +117,34 @@ def load_db() -> Optional[DBManager]:
         return None
 
 
+def persist_task(db: Optional[DBManager], task: dict):
+    if db is None:
+        return None
+    return db.insert_task(task)
+
+
+def update_task(db: Optional[DBManager], task_id, payload: dict):
+    if db is None or task_id is None:
+        return None
+    return db.update_task(task_id, payload)
+
+
+def delete_task(db: Optional[DBManager], task_id):
+    if db is None or task_id is None:
+        return None
+    return db.client.table("tasks").delete().eq("id", task_id).execute()
+
+
 def fetch_tasks(db: Optional[DBManager]):
     if db is None:
-        return [task.__dict__ for task in MOCK_TASKS]
+        return [task.__dict__ for task in TASKS_SEED]
     try:
         result = db.fetch_tasks()
         if getattr(result, "data", None):
             return result.data
     except Exception:
         pass
-    return [task.__dict__ for task in MOCK_TASKS]
+    return [task.__dict__ for task in TASKS_SEED]
 
 
 def fetch_notes(db: Optional[DBManager]):
@@ -183,14 +171,21 @@ def fetch_settings(db: Optional[DBManager]):
     return st.session_state.get("settings_data", {"name": "", "email": "", "reminder": True, "ai_mode": "ปานกลาง"})
 
 
+def task_lookup_index(tasks, task):
+    task_id = task.get("id")
+    if task_id is not None:
+        for i, item in enumerate(tasks):
+            if item.get("id") == task_id:
+                return i
+    for i, item in enumerate(tasks):
+        if item.get("title") == task.get("title") and item.get("due_date") == task.get("due_date"):
+            return i
+    return None
+
+
 def task_badge(priority: str) -> str:
     colors = {"ต่ำ": "#94a3b8", "ปานกลาง": "#3b82f6", "สูง": "#f59e0b", "เร่งด่วน": "#ef4444"}
     return colors.get(priority, "#64748b")
-
-
-def status_badge(status: str) -> str:
-    colors = {"ต้องทำ": "status-todo", "กำลังทำ": "status-progress", "รออยู่": "status-waiting", "เสร็จแล้ว": "status-done", "เกินกำหนด": "status-overdue"}
-    return colors.get(status, "status-todo")
 
 
 def render_header(title: str, subtitle: str):
@@ -205,225 +200,373 @@ def render_header(title: str, subtitle: str):
     )
 
 
+def days_left_text(target_date_str: str):
+    try:
+        target = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        return (target - date.today()).days
+    except Exception:
+        return None
+
+
+def due_badge_style(days_left):
+    if days_left is None:
+        return "background:#e2e8f0;color:#0f172a;"
+    if days_left < 0:
+        return "background:#fee2e2;color:#b91c1c;"
+    if days_left == 0:
+        return "background:#fecaca;color:#991b1b;"
+    if days_left <= 3:
+        return "background:#fef3c7;color:#b45309;"
+    if days_left <= 7:
+        return "background:#dbeafe;color:#1d4ed8;"
+    return "background:#dcfce7;color:#166534;"
+
+
+def days_breakdown_text(target_date_str: str):
+    try:
+        target = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        delta_days = (target - date.today()).days
+        years = abs(delta_days) // 365
+        months = (abs(delta_days) % 365) // 30
+        days = abs(delta_days) % 30
+        parts = []
+        if years:
+            parts.append(f"{years} ปี")
+        if months:
+            parts.append(f"{months} เดือน")
+        if days or not parts:
+            parts.append(f"{days} วัน")
+        if delta_days < 0:
+            return f"เลยกำหนด {' '.join(parts)}"
+        if delta_days == 0:
+            return "ครบกำหนดวันนี้"
+        return f"เหลือ {' '.join(parts)}"
+    except Exception:
+        return "ไม่ทราบวัน"
+
+
+def is_due_in_3_days(target_date_str: str) -> bool:
+    try:
+        target = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        return (target - date.today()).days == 3
+    except Exception:
+        return False
+
+
+def due_badge_text(days_left):
+    if days_left is None:
+        return "ไม่ทราบวัน"
+    if days_left < 0:
+        return f"เลยกำหนด {abs(days_left)} วัน"
+    if days_left == 0:
+        return "ครบกำหนดวันนี้"
+    if days_left == 1:
+        return "เหลือ 1 วัน"
+    return f"เหลือ {days_left} วัน"
+
+
 def render_dashboard(tasks):
-    render_header("แดชบอร์ด", "ดูภาพรวมงานวันนี้ สรุปสั้น ๆ และงานที่กำลังจะถึง")
-    total = len(tasks)
-    due_today = sum(1 for t in tasks if t.get("due_date") == date.today().isoformat())
-    in_progress = sum(1 for t in tasks if t.get("status") == "กำลังทำ")
-    completed = sum(1 for t in tasks if t.get("status") == "เสร็จแล้ว")
+    render_header("แดชบอร์ด", "ดูภาพรวมงานวันนี้ เตือนประชุม และงานที่ต้องทำต่อ")
+
+    today = date.today().isoformat()
+    overdue_tasks = [t for t in tasks if t.get("due_date") and t.get("due_date") < today and t.get("status") != "เสร็จแล้ว"]
+    today_tasks = [t for t in tasks if t.get("due_date") == today and t.get("status") != "เสร็จแล้ว"]
+    upcoming_tasks = [t for t in tasks if t.get("due_date") and t.get("due_date") > today and t.get("status") != "เสร็จแล้ว"]
+    urgent_tasks = [t for t in tasks if t.get("priority") == "เร่งด่วน" and t.get("status") != "เสร็จแล้ว"]
+    meeting_tasks = [t for t in tasks if "ประชุม" in str(t.get("title", "")) or "meeting" in str(t.get("title", "")).lower()]
 
     c1, c2, c3, c4 = st.columns(4)
-    for col, label, value in [(c1, "งานทั้งหมด", total), (c2, "ครบกำหนดวันนี้", due_today), (c3, "กำลังทำ", in_progress), (c4, "เสร็จแล้ว", completed)]:
-        col.markdown(f"<div class='metric'><div class='muted'>{label}</div><h2 style='margin:.2rem 0 0'>{value}</h2></div>", unsafe_allow_html=True)
+    c1.metric("งานทั้งหมด", len(tasks))
+    c2.metric("กำลังทำ", sum(1 for t in tasks if t.get("status") == "กำลังทำ"))
+    c3.metric("งานวันนี้", len(today_tasks))
+    c4.metric("เกินกำหนด", len(overdue_tasks))
 
-    left, right = st.columns([1.2, 1])
-    with left:
-        st.markdown("<div class='card'><div class='card-title'>สรุปจาก AI</div><p class='muted' style='margin-top:.5rem;'>ควรโฟกัสงานเร่งด่วนก่อน แล้วค่อยจัดการงานตามกำหนด ใช้หน้า AI วางแผนเมื่ออยากได้แผนรายวันหรือรายสัปดาห์</p><div style='margin-top:.75rem;'><span class='pill'>เร่งด่วน</span><span class='pill'>วันนี้</span><span class='pill'>ปฏิทิน</span></div></div>", unsafe_allow_html=True)
-    with right:
-        st.markdown("<div class='card'><div class='card-title'>ตารางวันนี้</div><div class='small' style='margin-top:.6rem;'>09:00 — ประชุมเช้า</div><div class='small'>11:00 — เขียนรายงาน</div><div class='small'>14:00 — คุยลูกค้า</div><div class='small'>16:00 — ตรวจสอบการเชื่อมปฏิทิน</div></div>", unsafe_allow_html=True)
+    st.markdown("### งานเร่งด่วน")
+    if urgent_tasks:
+        cols = st.columns(2)
+        for i, task in enumerate(urgent_tasks[:4]):
+            with cols[i % 2]:
+                st.markdown(
+                    f"<div class='task-row'><b>{task.get('title')}</b><span class='pill' style='background:#ef4444;color:white;margin-left:.5rem;'>เร่งด่วน</span><div class='muted' style='margin-top:.35rem;'>{days_breakdown_text(task.get('due_date', ''))}</div></div>",
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.markdown("<div class='task-row'><div class='muted'>ไม่มีงานเร่งด่วน</div></div>", unsafe_allow_html=True)
 
+    meeting_due_3_days = [t for t in meeting_tasks if is_due_in_3_days(t.get("due_date", ""))]
     st.write("")
-    st.subheader("งานที่กำลังจะถึง")
-    for task in tasks[:4]:
-        st.markdown(
-            f"""
-            <div class='task-row'>
-              <div style='display:flex; justify-content:space-between; gap:1rem; align-items:center;'>
-                <div>
-                  <div style='font-weight:700;'>{task.get('title')}</div>
-                  <div class='muted small'>{task.get('description', '')}</div>
-                </div>
-                <div style='text-align:right;'>
-                  <div><span class='pill' style='background:{task_badge(task.get('priority', ''))}; color:white;'>{task.get('priority', '')}</span></div>
-                  <div class='small muted' style='margin-top:.35rem;'>ครบกำหนด: {task.get('due_date', '-')}</div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    st.subheader("เตือนประชุม 3 วัน")
+    if meeting_due_3_days:
+        for task in meeting_due_3_days:
+            st.markdown(
+                f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='background:#f59e0b;color:white;'>อีก 3 วัน</span><div class='muted' style='margin-top:.35rem;'>เหลือ {days_breakdown_text(task.get('due_date', ''))}</div></div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown("<div class='task-row'><div class='muted'>ไม่มีประชุมที่เหลืออีก 3 วัน</div></div>", unsafe_allow_html=True)
 
-
-def _normalize_task_status(task):
-    title = str(task.get('title', '')).strip()
-    due_date = str(task.get('due_date', '')).strip()
-    status = str(task.get('status', '')).strip()
-
-    if status in {'เสร็จแล้ว', 'Done'}:
-        return 'เสร็จแล้ว'
-    if status in {'กำลังทำ', 'In Progress'}:
-        return 'กำลังทำ'
-    if status in {'รออยู่', 'Waiting'}:
-        return 'รออยู่'
-    if status in {'เกินกำหนด', 'Overdue'}:
-        return 'เกินกำหนด'
-
-    if due_date and due_date < date.today().isoformat() and status not in {'เสร็จแล้ว', 'Done'}:
-        return 'เกินกำหนด'
-    if title:
-        return 'ต้องทำ'
-    return 'ต้องทำ'
-
-
-def _group_tasks_by_status(tasks):
-    groups = {
-        'เกินกำหนด': [],
-        'ยังไม่ได้เริ่ม': [],
-        'กำลังทำ': [],
-        'รออยู่': [],
-        'เสร็จแล้ว': [],
-    }
-    for task in tasks:
-        status = _normalize_task_status(task)
-        if status == 'ต้องทำ':
-            groups['ยังไม่ได้เริ่ม'].append(task)
+    left, right = st.columns([1.15, 0.85])
+    with left:
+        st.markdown("<div class='card'><b>งานวันนี้</b><div class='muted' style='margin-top:.4rem;'>โฟกัสงานด่วนก่อน แล้วค่อยไล่ตามเดดไลน์ที่เหลือ</div></div>", unsafe_allow_html=True)
+        st.write("")
+        if today_tasks:
+            for task in today_tasks:
+                st.markdown(
+                    f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='background:#fecaca;color:#991b1b;'>ครบกำหนดวันนี้</span><div class='muted' style='margin-top:.35rem;'>{task.get('due_date', '')}</div></div>",
+                    unsafe_allow_html=True,
+                )
         else:
-            groups.setdefault(status, []).append(task)
+            st.markdown("<div class='task-row'><div class='muted'>ไม่มีงานครบกำหนดวันนี้</div></div>", unsafe_allow_html=True)
+
+        st.write("")
+        st.subheader("เตือนส่งงานล่วงหน้า")
+        upcoming_within_week = [t for t in upcoming_tasks if days_left_text(t.get("due_date", "")) is not None and 0 < days_left_text(t.get("due_date", "")) <= 7]
+        if upcoming_within_week:
+            for task in upcoming_within_week:
+                dl = days_left_text(task.get("due_date", ""))
+                st.markdown(
+                    f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='{due_badge_style(dl)}'>{due_badge_text(dl)}</span><div class='muted' style='margin-top:.35rem;'>ครบกำหนด: {task.get('due_date', '')}</div></div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown("<div class='task-row'><div class='muted'>ไม่มีงานที่ต้องเตือนภายใน 7 วัน</div></div>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown("<div class='card'><b>นัดประชุม</b></div>", unsafe_allow_html=True)
+        if meeting_tasks:
+            for task in meeting_tasks[:5]:
+                dl = days_left_text(task.get("due_date", ""))
+                st.markdown(
+                    f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='{due_badge_style(dl)}'>{days_breakdown_text(task.get('due_date', ''))}</span><div class='muted' style='margin-top:.35rem;'>{task.get('due_date', '')}</div></div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown("<div class='task-row'><div class='muted'>ยังไม่มีนัดประชุม</div></div>", unsafe_allow_html=True)
+
+        st.write("")
+        st.markdown("<div class='card'><b>งานถัดไป</b></div>", unsafe_allow_html=True)
+        if upcoming_tasks:
+            for task in sorted(upcoming_tasks, key=lambda x: x.get("due_date", ""))[:5]:
+                dl = days_left_text(task.get("due_date", ""))
+                st.markdown(
+                    f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='{due_badge_style(dl)}'>{days_breakdown_text(task.get('due_date', ''))}</span><div class='muted' style='margin-top:.35rem;'>{task.get('due_date', '')}</div></div>",
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.markdown("<div class='task-row'><div class='muted'>ไม่มีงานถัดไป</div></div>", unsafe_allow_html=True)
+
+
+def group_tasks(tasks):
+    groups = {s: [] for s in STATUS_FLOW}
+    for task in tasks:
+        status = task.get("status", "ยังไม่ได้เริ่ม")
+        if status not in groups:
+            status = "ยังไม่ได้เริ่ม"
+        groups[status].append(task)
     return groups
-
-
-def _render_task_card(task):
-    return f"""
-    <div class='kanban-card'>
-      <div style='display:flex; justify-content:space-between; gap:1rem; align-items:flex-start;'>
-        <div>
-          <div style='font-weight:700; font-size:1rem; color:#0f172a;'>{task.get('title')}</div>
-          <div class='muted small' style='margin-top:.25rem;'>ครบกำหนด: {task.get('due_date', '-')}</div>
-          <div class='small' style='margin-top:.4rem; color:#475569;'>{task.get('description', '')}</div>
-        </div>
-        <div style='text-align:right; min-width:120px;'>
-          <div><span class='pill' style='background:{task_badge(task.get('priority', ''))}; color:white;'>{task.get('priority', '')}</span></div>
-          <div style='margin-top:.45rem;'><span class='status-badge {status_badge(_normalize_task_status(task))}'>{_normalize_task_status(task)}</span></div>
-        </div>
-      </div>
-    </div>
-    """
 
 
 def render_tasks(tasks):
     st.session_state.setdefault("tasks_data", tasks)
-    st.session_state.setdefault("show_add_task", False)
     tasks_data = st.session_state["tasks_data"]
+    expand_add = st.session_state.pop("show_add_task", False)
 
-    col_a, col_b = st.columns([1, 0.35])
-    with col_a:
-        render_header("งาน", "Kanban board แบบแยกตามสถานะ ทำให้เห็นงานทุกกล่องชัดเจน")
-    with col_b:
-        if st.button("+ เพิ่มงาน", use_container_width=True):
-            st.session_state["show_add_task"] = True
+    render_header("งาน", "Kanban board — เพิ่ม แก้ไข ลบ และเชื่อม Supabase")
+    db = st.session_state.get("db")
 
-    if st.session_state.get("show_add_task"):
-        with st.expander("เพิ่มงานใหม่", expanded=True):
-            with st.form("add_task_form", clear_on_submit=True):
-                title = st.text_input("ชื่องาน")
-                description = st.text_area("รายละเอียด")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    due_date = st.date_input("กำหนดส่ง", value=date.today())
-                with col2:
-                    priority = st.selectbox("ความสำคัญ", ["ต่ำ", "ปานกลาง", "สูง", "เร่งด่วน"])
-                with col3:
-                    tag = st.text_input("แท็ก", value="งาน")
-                status = st.selectbox("สถานะ", STATUS_FLOW, index=0)
-                submitted = st.form_submit_button("บันทึกงาน", use_container_width=True)
-                if submitted:
-                    if not title.strip():
-                        st.error("กรุณาใส่ชื่องาน")
-                    else:
-                        new_task = {
-                            "title": title.strip(),
-                            "description": description.strip(),
-                            "due_date": due_date.isoformat(),
-                            "priority": priority,
-                            "status": status,
-                            "tag": tag.strip() or "งาน",
-                        }
-                        if st.session_state.get("db") is not None:
-                            try:
-                                st.session_state["db"].insert_task(new_task)
-                            except Exception as e:
-                                st.error(f"บันทึกลงฐานข้อมูลไม่สำเร็จ: {e}")
-                                st.stop()
+    with st.expander("+ เพิ่มงานใหม่", expanded=expand_add):
+        with st.form("add_task_form", clear_on_submit=True):
+            title = st.text_input("ชื่องาน")
+            description = st.text_area("รายละเอียด")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                due_date = st.date_input("กำหนดส่ง", value=date.today())
+            with c2:
+                priority = st.selectbox("ความสำคัญ", ["ต่ำ", "ปานกลาง", "สูง", "เร่งด่วน"])
+            with c3:
+                tag = st.text_input("แท็ก", value="งาน")
+            status = st.selectbox("สถานะ", STATUS_FLOW)
+            if st.form_submit_button("บันทึกงาน", use_container_width=True):
+                if not title.strip():
+                    st.error("กรุณาใส่ชื่องาน")
+                else:
+                    new_task = {
+                        "title": title.strip(),
+                        "description": description.strip(),
+                        "due_date": due_date.isoformat(),
+                        "priority": priority,
+                        "status": status,
+                        "tag": tag.strip() or "งาน",
+                    }
+                    try:
+                        if db is not None:
+                            persist_task(db, new_task)
                         tasks_data.append(new_task)
                         st.session_state["tasks_data"] = tasks_data
-                        st.session_state["show_add_task"] = False
-                        st.success("เพิ่มงานเรียบร้อยแล้ว")
+                        st.success("เพิ่มงานแล้ว")
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"เพิ่มงานไม่สำเร็จ: {e}")
 
-    f1, f2, f3, f4 = st.columns(4)
-    f1.button("สถานะทั้งหมด", use_container_width=True)
-    f2.button("ความสำคัญ", use_container_width=True)
-    f3.button("แท็ก", use_container_width=True)
-    f4.button("ค้นหา", use_container_width=True)
-
-    groups = _group_tasks_by_status(tasks_data)
-    status_order = [
-        ('ยังไม่ได้เริ่ม', 'ยังไม่ได้เริ่ม'),
-        ('กำลังทำ', 'กำลังทำ'),
-        ('รออยู่', 'รออยู่'),
-        ('เกินกำหนด', 'เกินกำหนด'),
-        ('เสร็จแล้ว', 'เสร็จแล้ว'),
-    ]
-
-    st.markdown("<div style='margin:.5rem 0 1rem 0; color:#64748b; font-size:.92rem;'>งานทุกสถานะจะแสดงแยกเป็นกล่องด้านล่าง</div>", unsafe_allow_html=True)
+    groups = group_tasks(tasks_data)
     cols = st.columns(2)
-    for index, (status_key, section_title) in enumerate(status_order):
-        with cols[index % 2]:
-            count = len(groups.get(status_key, []))
+    for i, status in enumerate(STATUS_FLOW):
+        with cols[i % 2]:
             st.markdown(
-                f"<div class='kanban-col' style='margin-bottom:1rem;'><div class='kanban-header'><div><div class='kanban-title'>{section_title}</div><div class='muted small' style='margin-top:.2rem;'>{count} งาน</div></div><div class='kanban-count'>{count}</div></div></div>",
+                f"<div class='kanban-col'><div style='display:flex;justify-content:space-between;align-items:center;'><div class='kanban-title'>{status}</div><div class='kanban-count'>{len(groups[status])}</div></div></div>",
                 unsafe_allow_html=True,
             )
-            if count == 0:
-                st.markdown("<div class='kanban-card'><div class='muted small'>ยังไม่มีงานในหมวดนี้</div></div>", unsafe_allow_html=True)
-            else:
-                for task in groups.get(status_key, []):
-                    task_index = tasks_data.index(task)
-                    st.markdown(_render_task_card(task), unsafe_allow_html=True)
-                    current_status = _normalize_task_status(task)
-                    current_status_index = STATUS_FLOW.index(current_status) if current_status in STATUS_FLOW else 0
+            if not groups[status]:
+                st.markdown("<div class='kanban-card'><div class='muted'>ยังไม่มีงาน</div></div>", unsafe_allow_html=True)
+            for idx, task in enumerate(groups[status]):
+                task_index = task_lookup_index(tasks_data, task)
+                st.markdown(
+                    f"""
+                    <div class='kanban-card'>
+                      <div style='font-weight:700; color:#0f172a;'>{task.get('title')}</div>
+                      <div class='muted' style='margin-top:.25rem;'>{task.get('description', '')}</div>
+                      <div style='margin-top:.55rem;'><span class='pill' style='background:{task_badge(task.get('priority', ''))}; color:white;'>{task.get('priority', '')}</span></div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                status_col, edit_col, delete_col = st.columns([1.4, 1, 1])
+                with status_col:
                     new_status = st.selectbox(
-                        f"เปลี่ยนสถานะของ {task.get('title')}",
+                        "เปลี่ยนสถานะ",
                         STATUS_FLOW,
-                        index=current_status_index,
-                        key=f"status_select_{task_index}_{status_key}",
+                        index=STATUS_FLOW.index(task.get("status", "ยังไม่ได้เริ่ม")) if task.get("status", "ยังไม่ได้เริ่ม") in STATUS_FLOW else 0,
+                        key=f"status_select_{task_index}_{status}_{idx}",
                         label_visibility="collapsed",
                     )
-                    if new_status != current_status:
+                    if new_status != task.get("status") and task_index is not None:
                         tasks_data[task_index]["status"] = new_status
+                        if db is not None and task.get("id") is not None:
+                            update_task(db, task.get("id"), {"status": new_status})
                         st.session_state["tasks_data"] = tasks_data
                         st.rerun()
+                with edit_col:
+                    if st.button("แก้ไข", key=f"edit_{task_index}_{idx}", use_container_width=True):
+                        st.session_state["editing_task"] = task
+                        st.rerun()
+                with delete_col:
+                    if st.button("ลบ", key=f"delete_{task_index}_{idx}", use_container_width=True):
+                        if db is not None and task.get("id") is not None:
+                            delete_task(db, task.get("id"))
+                        if task_index is not None:
+                            tasks_data.pop(task_index)
+                            st.session_state["tasks_data"] = tasks_data
+                        st.success("ลบงานแล้ว")
+                        st.rerun()
+
+    editing_task = st.session_state.get("editing_task")
+    if editing_task:
+        st.markdown("---")
+        st.subheader("แก้ไขงาน")
+        with st.form("edit_task_form"):
+            title = st.text_input("ชื่องาน", value=editing_task.get("title", ""))
+            description = st.text_area("รายละเอียด", value=editing_task.get("description", ""))
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                due_date = st.date_input("กำหนดส่ง", value=date.fromisoformat(editing_task.get("due_date", date.today().isoformat())))
+            with c2:
+                priority = st.selectbox(
+                    "ความสำคัญ",
+                    ["ต่ำ", "ปานกลาง", "สูง", "เร่งด่วน"],
+                    index=["ต่ำ", "ปานกลาง", "สูง", "เร่งด่วน"].index(editing_task.get("priority", "ปานกลาง")),
+                )
+            with c3:
+                tag = st.text_input("แท็ก", value=editing_task.get("tag", "งาน"))
+            status = st.selectbox(
+                "สถานะ",
+                STATUS_FLOW,
+                index=STATUS_FLOW.index(editing_task.get("status", "ยังไม่ได้เริ่ม")) if editing_task.get("status", "ยังไม่ได้เริ่ม") in STATUS_FLOW else 0,
+            )
+            csave, ccancel = st.columns(2)
+            save = csave.form_submit_button("บันทึกการแก้ไข", use_container_width=True)
+            cancel = ccancel.form_submit_button("ยกเลิก", use_container_width=True)
+            if save:
+                updated = {
+                    "title": title.strip(),
+                    "description": description.strip(),
+                    "due_date": due_date.isoformat(),
+                    "priority": priority,
+                    "status": status,
+                    "tag": tag.strip() or "งาน",
+                }
+                idx = task_lookup_index(tasks_data, editing_task)
+                if idx is not None:
+                    task_id = tasks_data[idx].get("id")
+                    tasks_data[idx].update(updated)
+                    if db is not None and task_id is not None:
+                        update_task(db, task_id, updated)
+                    st.session_state["tasks_data"] = tasks_data
+                st.session_state.pop("editing_task", None)
+                st.success("บันทึกการแก้ไขแล้ว")
+                st.rerun()
+            if cancel:
+                st.session_state.pop("editing_task", None)
+                st.rerun()
+
+
+def render_urgent(tasks):
+    render_header("เร่งด่วน", "เฉพาะงานที่ตั้งความสำคัญเป็นเร่งด่วน และยังไม่เสร็จ")
+    urgent = [t for t in tasks if t.get("priority") == "เร่งด่วน" and t.get("status") != "เสร็จแล้ว"]
+    if not urgent:
+        st.markdown("<div class='task-row'><div class='muted'>ไม่มีงานเร่งด่วน</div></div>", unsafe_allow_html=True)
+        return
+    for task in urgent:
+        st.markdown(
+            f"<div class='task-row'><b>{task.get('title')}</b><span class='pill' style='background:#ef4444;color:white;margin-left:.5rem;'>เร่งด่วน</span>"
+            f"<div class='muted' style='margin-top:.35rem;'>{task.get('description', '')}</div>"
+            f"<div class='muted' style='margin-top:.25rem;'>ครบกำหนด: {task.get('due_date', '-')} · {days_breakdown_text(task.get('due_date', ''))}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+def render_meetings(tasks):
+    render_header("นัดประชุม", "งานที่หัวข้อมีคำว่าประชุม / meeting")
+    meeting_tasks = [t for t in tasks if "ประชุม" in str(t.get("title", "")) or "meeting" in str(t.get("title", "")).lower()]
+    if meeting_tasks:
+        for task in meeting_tasks:
+            st.markdown(
+                f"<div class='task-row'><b>{task.get('title')}</b> <span class='pill' style='{due_badge_style(days_left_text(task.get('due_date', '')))}'>{days_breakdown_text(task.get('due_date', ''))}</span>"
+                f"<div class='muted' style='margin-top:.35rem;'>วันนัด: {task.get('due_date', '')}</div></div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown("<div class='task-row'><div class='muted'>ยังไม่มีนัดประชุม</div></div>", unsafe_allow_html=True)
 
 
 def render_calendar(tasks):
     render_header("ปฏิทิน", "ดูงานตามเวลาและวางแผนสัปดาห์ของคุณ")
-    selected_day = st.date_input("เลือกวันที่", value=date(2026, 4, 19))
+    selected_day = st.date_input("เลือกวันที่", value=date.today())
     left, right = st.columns([1.4, 0.8])
     with left:
         st.markdown(
             """
             <div class='card'>
               <div style='display:flex; justify-content:space-between; align-items:center;'>
-                <div class='card-title'>เมษายน 2026</div>
-                <div class='muted'>เดือน · สัปดาห์ · วัน</div>
+                <div class='card-title'>ปฏิทิน (ตัวอย่าง UI)</div>
+                <div class='muted'>เชื่อม Google Calendar ได้ในภายหลัง</div>
               </div>
               <div style='margin-top:1rem; display:grid; grid-template-columns: repeat(7, 1fr); gap:.6rem;'>
-                <div class='task-row' style='min-height:84px;'><b>จ. 15</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>อ. 16</b><div class='small muted'>ประชุมเช้า</div></div>
-                <div class='task-row' style='min-height:84px;'><b>พ. 17</b><div class='small muted'>AI วางแผน</div></div>
-                <div class='task-row' style='min-height:84px;'><b>พฤ. 18</b><div class='small muted'>ประชุม</div></div>
-                <div class='task-row' style='min-height:84px;'><b>ศ. 19</b><div class='small muted'>รายงาน</div></div>
-                <div class='task-row' style='min-height:84px;'><b>ส. 20</b><div class='small muted'>-</div></div>
-                <div class='task-row' style='min-height:84px;'><b>อา. 21</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>จ</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>อ</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>พ</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>พฤ</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>ศ</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>ส</b><div class='small muted'>-</div></div>
+                <div class='task-row' style='min-height:84px;'><b>อา</b><div class='small muted'>-</div></div>
               </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     with right:
-        todays_tasks = [t for t in tasks if t.get('due_date') == selected_day.isoformat()]
+        todays_tasks = [t for t in tasks if t.get("due_date") == selected_day.isoformat()]
         st.markdown("<div class='card'><div class='card-title'>วันที่เลือก</div>", unsafe_allow_html=True)
-        st.write(selected_day.strftime('%d %b %Y'))
+        st.write(selected_day.strftime("%d %b %Y"))
         if todays_tasks:
             for t in todays_tasks:
                 st.markdown(f"<div class='task-row'><b>{t.get('title')}</b><div class='small muted'>{t.get('status')}</div></div>", unsafe_allow_html=True)
@@ -431,7 +574,7 @@ def render_calendar(tasks):
             st.markdown("<div class='task-row'><div class='small muted'>ไม่มีงานในวันนี้</div></div>", unsafe_allow_html=True)
         if st.button("+ เพิ่มงานด่วน", use_container_width=True):
             st.session_state["show_add_task"] = True
-            st.success("เปิดฟอร์มเพิ่มงานด่วนด้านบนแล้ว")
+            st.success("ไปที่เมนู **งาน** — ฟอร์มเพิ่มงานจะเปิดให้")
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -440,7 +583,7 @@ def render_ai_planner():
     goal = st.selectbox("เลือกเป้าหมาย", ["สรุปงานของฉัน", "วางแผนสัปดาห์", "แตกเป้าหมายเป็นงาน", "สรุปบันทึกการประชุม"])
     c1, c2 = st.columns([1.1, 0.9])
     with c1:
-        prompt = st.text_area("ข้อความตั้งต้น", placeholder="อธิบายเป้าหมาย บันทึกการประชุม หรือสิ่งที่อยากให้ช่วยวางแผน...", height=180)
+        st.text_area("ข้อความตั้งต้น", placeholder="อธิบายเป้าหมาย บันทึกการประชุม หรือสิ่งที่อยากให้ช่วยวางแผน...", height=180)
         if st.button("สร้างแผน", use_container_width=True):
             st.session_state["ai_result"] = f"ผลลัพธ์ตัวอย่างสำหรับ: {goal}"
     with c2:
@@ -516,7 +659,11 @@ def render_settings(db):
         name = st.text_input("ชื่อผู้ใช้", value=settings["name"])
         email = st.text_input("อีเมล", value=settings["email"])
         reminder = st.toggle("เปิดการแจ้งเตือน", value=settings["reminder"])
-        ai_mode = st.selectbox("ระดับการช่วยของ AI", ["น้อย", "ปานกลาง", "มาก"], index=["น้อย", "ปานกลาง", "มาก"].index(settings["ai_mode"]))
+        ai_mode = st.selectbox(
+            "ระดับการช่วยของ AI",
+            ["น้อย", "ปานกลาง", "มาก"],
+            index=["น้อย", "ปานกลาง", "มาก"].index(settings["ai_mode"]),
+        )
         save_settings = st.form_submit_button("บันทึกการตั้งค่า")
         if save_settings:
             payload = {"id": 1, "name": name, "email": email, "reminder": reminder, "ai_mode": ai_mode}
@@ -536,7 +683,7 @@ def render_settings(db):
 
 
 def main():
-    st.sidebar.markdown("<div class='sidebar-brand'>EzyCommunity</div><div class='muted small'>งาน · ปฏิทิน · AI วางแผน</div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div class='sidebar-brand'>EzyCommunity</div><div class='muted small'>งาน · นัดประชุม · ปฏิทิน · AI</div>", unsafe_allow_html=True)
     page = st.sidebar.radio("เมนู", NAV_ITEMS, index=0, label_visibility="collapsed")
 
     db = load_db()
@@ -553,6 +700,10 @@ def main():
         render_dashboard(tasks)
     elif page == "งาน":
         render_tasks(tasks)
+    elif page == "เร่งด่วน":
+        render_urgent(tasks)
+    elif page == "นัดประชุม":
+        render_meetings(tasks)
     elif page == "ปฏิทิน":
         render_calendar(tasks)
     elif page == "AI วางแผน":
